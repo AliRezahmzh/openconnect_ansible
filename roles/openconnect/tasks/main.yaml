@@ -1,0 +1,186 @@
+- name: <-------------------- Check OS family ------------------>
+  debug:
+    msg: "this os family is not Debian !!!"
+  when: ansible_os_family != "Debian"
+
+- name: <---------------- enable ipv4 forward --------------------->
+  replace:
+    path: /etc/sysctl.conf
+    regexp: '#net.ipv4.ip_forward=1'
+    replace: 'net.ipv4.ip_forward=1'
+    backup: yes
+  tags: change_forward
+
+- name: <------------------ apply forwarding ---------------------->
+  shell: sysctl -p
+  tags: change_forward
+
+- name: <------------------- apt update ---------------------->
+  command: apt update
+  ignore_errors: true
+  tags: update_apt
+
+- name: <-------------------- install ocserv -------------------->
+  apt:
+    name: ocserv
+    state: present
+  tags: install_ocserv
+
+- name: <-------------------- enable and restart ocserv ---------->
+  service:
+    name: ocserv
+    state: restarted
+    enabled: yes
+  tags: install_ocserv
+
+
+
+- name: <----------------------- change ocserv.conf ------------------->
+  template:
+    src: ocserv.conf.j2
+    dest: /etc/ocserv/ocserv.conf
+    backup: yes
+  tags: ocserv_conf
+
+- name: <-------------------- restart ocserv service ------------->
+  service:
+    name: ocserv
+    state: restarted
+    enabled: yes
+  tags: ocserv_conf
+
+- name: <------------------------ install ufw -------------------->
+  apt:
+    name: ufw
+    state: present
+  tags: install_ufw
+
+- name: <---------------------- allow 22 & 443 ------------->
+  ufw:
+    rule: allow
+    port: '{{item}}'
+    proto: tcp
+  loop:
+    - 22
+    - 443
+  tags: ssh_port
+
+- name: <------------------------ open http & https on server ------------->
+  shell: ufw allow '{{item}}'/tcp
+  loop:
+    - "80"
+    - "443"
+  ignore_errors: true
+  tags: open_http_s
+
+- name: <-------------------- check ufw before rule ----------------->
+  shell: cat /etc/ufw/before.rules
+  register: rules_conf
+  tags: ufw_rule
+
+- name: <-------------------- config ufw before rule ----------------->
+  lineinfile:
+    path: /etc/ufw/before.rules
+    insertafter: 'COMMIT'
+    line: "{{item}}"
+  loop:
+    - '# NAT table rules'
+    - '*nat'
+    - ':POSTROUTING ACCEPT [0:0]'
+    - '-A POSTROUTING -s 172.18.10.0/24 -o {{ansible_default_ipv4.interface}} -j MASQUERADE '
+  when: rules_conf.stdout.find('# NAT table rules') == -1
+  tags: ufw_rule
+
+- name: <-------------------- config ufw before rule ----------------->
+  debug:
+    msg: "config is exist"
+  when: rules_conf.stdout.find('# NAT table rules') != -1
+  tags: ufw_rule
+
+
+
+
+- name: <-------------------- trusted network config ufw before rule ----------------->
+  lineinfile:
+    path: /etc/ufw/before.rules
+    insertbefore: '# allow dhcp client to work'
+    line: "{{item}}"
+  loop:
+    - '# allow forwarding for trusted network'
+    - '-A ufw-before-forward -s 172.18.10.0/24 -j ACCEPT'
+    - '-A ufw-before-forward -d 172.18.10.0/24 -j ACCEPT'
+  when: rules_conf.stdout.find('# allow forwarding for trusted network') == -1
+  tags: ufw_rule
+
+- name: <-------------------- config ufw before rule ----------------->
+  debug:
+    msg: " ufw-before-forward config is exist"
+  when: rules_conf.stdout.find('# allow forwarding for trusted network') != -1
+  tags: ufw_rule
+
+
+- name: <----------------------- config ufw.conf -------------------------->
+  replace:
+    path: /etc/ufw/ufw.conf
+    regexp: 'ENABLED=no'
+    replace: 'ENABLED=yes'
+    backup: yes
+  tags: enable_ufw
+
+#- name: <----------------- enable ufw ---------------------->
+#  command: ufw enable
+#  tags: ufw_enable
+
+
+- name: <-------------------- enable and restart ufw ---------->
+  service:
+    name: ufw
+    state: restarted
+#    enabled: yes
+  tags: ufw_enable
+
+
+- name: <----------------- test nat list ---------------------->
+  command: iptables -t nat -L POSTROUTING
+  register: nat_test
+  tags: test_nat
+
+- name: <----------------- show test nat list ---------------------->
+  debug:
+    msg: "{{nat_test.stdout}}"
+  tags: test_nat
+
+
+- name: <--------------------- install expect ----------------->
+  apt:
+    name: python3-pexpect
+    state: present
+  tags: pexpect_install
+
+- name: <----------------- register username ---------------------->
+  pause:
+    prompt: "please enter username :"
+  register: username
+  tags: add_user
+
+- name: <----------------- register password ---------------------->
+  pause:
+    prompt: "please enter password :"
+  register: password
+  tags: add_user
+
+#- name: ------------- show user and pass ----------
+#  debug:
+#    msg: "{{username.user_input}}"
+#  tags: add_user
+
+- name: <----------------- add user ---------------------->
+  expect:
+    command: ocpasswd -c /etc/ocserv/ocpasswd "{{username.user_input}}"
+    responses:
+      password: "{{item}}"
+  loop:
+    - "{{password.user_input}}"
+    - "{{password.user_input}}"
+  tags: add_user
+
